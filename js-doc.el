@@ -48,6 +48,7 @@
 ;;; Code:
 
 (require 'iswitchb)
+(require 'cl)
 
 ;;; Custom:
 (defgroup js-doc nil
@@ -278,36 +279,36 @@ The comment style can be custimized via `customize-group js-doc'"
             (search-forward "{" nil t)
             end
             (scan-lists (1- begin) 1 0))
-    ;; put document string into document-list
-    (add-to-list 'document-list
-		 (js-doc-format-string js-doc-top-line) t)
-    (add-to-list 'document-list
-		 (js-doc-format-string js-doc-description-line) t)
-    ;; params
-    (dolist (param params)
-      (setq js-doc-current-parameter-name param)
+      ;; put document string into document-list
       (add-to-list 'document-list
-		   (js-doc-format-string js-doc-parameter-line) t))
-    ;; return / throw
-    (when (js-doc-block-has-regexp begin end
-				   js-doc-return-regexp)
+                   (js-doc-format-string js-doc-top-line) t)
       (add-to-list 'document-list
-		   (js-doc-format-string js-doc-return-line) t))
-    (when (js-doc-block-has-regexp begin end
-				   js-doc-throw-regexp)
+                   (js-doc-format-string js-doc-description-line) t)
+      ;; params
+      (dolist (param params)
+        (setq js-doc-current-parameter-name param)
+        (add-to-list 'document-list
+                     (js-doc-format-string js-doc-parameter-line) t))
+      ;; return / throw
+      (when (js-doc-block-has-regexp begin end
+                                     js-doc-return-regexp)
+        (add-to-list 'document-list
+                     (js-doc-format-string js-doc-return-line) t))
+      (when (js-doc-block-has-regexp begin end
+                                     js-doc-throw-regexp)
+        (add-to-list 'document-list
+                     (js-doc-format-string js-doc-throw-line) t))
+      ;; end
       (add-to-list 'document-list
-		   (js-doc-format-string js-doc-throw-line) t))
-    ;; end
-    (add-to-list 'document-list
-		 (js-doc-format-string js-doc-bottom-line) t)
-    ;; Insert the document
-    (search-backward "(" nil t)
-    (beginning-of-line)
-    (setq from (point))                 ; for indentation
-    (dolist (document document-list)
-      (insert document))
-    ;; Indent
-    (indent-region from (point)))))
+                   (js-doc-format-string js-doc-bottom-line) t)
+      ;; Insert the document
+      (search-backward "(" nil t)
+      (beginning-of-line)
+      (setq from (point))                 ; for indentation
+      (dolist (document document-list)
+        (insert document))
+      ;; Indent
+      (indent-region from (point)))))
 
 ;; http://www.emacswiki.org/emacs/UseIswitchBuffer
 (defun js-doc-icompleting-read (prompt collection)
@@ -364,15 +365,69 @@ The comment style can be custimized via `customize-group js-doc'"
   (let ((tag (completing-read "Tag: " (js-doc-make-tag-list)
 			      nil t (word-at-point) nil nil))
 	(temp-buffer-show-hook #'(lambda ()
-				  (fill-region 0 (buffer-size))
-				  (fit-window-to-buffer))))
+                                   (fill-region 0 (buffer-size))
+                                   (fit-window-to-buffer))))
     (unless (string-equal tag "")
       (with-output-to-temp-buffer "JsDocTagDescription"
 	(princ (format "@%s\n\n%s"
 		       tag
 		       (cdr (assoc tag js-doc-all-tag-alist))))))))
 
+
+(defun js-doc-field-rx ()
+  "A regexp whose groups are the fields of the doc. Jump to the
+end of the last group before rerunning or I can't guarantee where
+this will take you."
+  (let ((field-rx (macroexpand
+                   `(rx (group (minimal-match (0+ anything)))
+                        (or (sequence line-start " * @")
+                            ,js-doc-bottom-line))))
+        (tag-rx (macroexpand
+                 `(rx line-start " * @"
+                      (or ,@(mapcar 'car js-doc-all-tag-alist))
+                      (0+ blank)
+                      "{" (group (minimal-match (0+ not-newline))) "}"
+                      (0+ blank))))
+        (description-rx (rx "/**" "\n" " * ")))
+    (macroexpand `(rx (or (group (regexp ,description-rx))
+                          (regexp ,tag-rx))
+                      (regexp ,field-rx)))))
+
+(defun js-doc--regex-beginning (regexp)
+  (goto-char
+   (or (save-excursion
+         (while (and (not (looking-at regexp))
+                     (> (point) (point-min)))
+           (backward-char))
+         (when (looking-at regexp) (point))) (point))))
+
+(defun js-doc--get-odd-elements (elements &optional even-elements)
+  "Provided with '(1 2 3) => '(1 3)"
+  (if (null elements)
+      (nreverse even-elements)
+    (js-doc--get-odd-elements
+     (cddr elements)
+     (cons (car elements) even-elements))))
+
+(defun js-doc-jump-to-next-field ()
+  ;; Only do this if there is a document ahead or we are in one.
+  (when (or (js-doc-in-document-p (point))
+            (re-search-forward (js-doc-field-rx) nil t))
+
+    (let ((pt (point)))
+      ;; Go somewhere where we can match the end.
+      (goto-char (js-doc--regex-beginning (js-doc-field-rx)))
+
+      (when (re-search-forward (js-doc-field-rx) nil t)
+        ;; Find the first group beginning that is after the original
+        ;; point position
+        (let ((valid-points (remove-if-not
+                             (lambda (x) (and x (< pt x)))
+                             (cdr (js-doc--get-odd-elements (match-data))))))
+          (if valid-points (goto-char (car valid-points))
+            ;; Point is at the end of the regex now
+            (js-doc-jump-to-next-field)))))))
+
 (provide 'js-doc)
 
 ;;; js-doc.el ends here
-
