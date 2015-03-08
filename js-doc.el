@@ -250,6 +250,8 @@ The comment style can be custimized via `customize-group js-doc'"
   (while (or (js-doc-in-comment-p (point))
              (js-doc-blank-line-p (point)))
     (forward-line -1)
+    (when (= (point) (point-min))
+      (error "Searched to the top for non-syntactic whitespace"))
     (end-of-line))
   (end-of-line)
   (beginning-of-defun)
